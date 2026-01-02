@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>2D Battle Royale</title>
     <style>
         body {
@@ -15,24 +15,200 @@
             height: 100vh;
             margin: 0;
             font-family: sans-serif;
+            overflow: hidden; /* Prevent scrolling on mobile */
+            touch-action: none; /* Disable double-tap zoom */
         }
         canvas {
             background-color: #333;
             border: 2px solid #555;
             box-shadow: 0 0 20px black;
-            cursor: crosshair;
+            max-width: 100%;
+            max-height: 80vh;
         }
         #ui {
             margin-bottom: 10px;
+            text-align: center;
+        }
+        #status {
+            font-weight: bold;
+            color: orange;
+        }
+        /* Mobile Shoot Button */
+        #shootBtn {
+            margin-top: 15px;
+            padding: 15px 40px;
+            background-color: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 50px;
+            font-size: 20px;
+            font-weight: bold;
+            display: none; /* Hidden on PC, shown via JS if mobile */
+        }
+        #shootBtn:active {
+            background-color: #c0392b;
         }
     </style>
 </head>
 <body>
-    <div id="ui">Controls: WASD to Move, Click to Shoot</div>
+    <div id="ui">
+        Status: <span id="status">Connecting...</span><br>
+        <small>Desktop: WASD to Move, Click to Shoot</small><br>
+        <small>Mobile: Touch & Drag to Move</small>
+    </div>
+    
     <canvas id="gameCanvas" width="800" height="600"></canvas>
+    
+    <button id="shootBtn">SHOOT</button>
 
-    <!-- Import Socket.io from the server -->
+    <!-- Import Socket.io automatically served by the backend -->
     <script src="/socket.io/socket.io.js"></script>
-    <script src="game.js"></script>
+    
+    <script>
+        const socket = io();
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const statusSpan = document.getElementById('status');
+        const shootBtn = document.getElementById('shootBtn');
+
+        // Check if mobile
+        if (/Android|iPhone|iPad/i.test(navigator.userAgent)) {
+            shootBtn.style.display = 'block';
+        }
+
+        let myPlayerId = null;
+        let myPlayer = null;
+
+        // Connection Events
+        socket.on('connect', () => {
+            statusSpan.innerText = "Connected!";
+            statusSpan.style.color = "lightgreen";
+            myPlayerId = socket.id;
+        });
+
+        socket.on('disconnect', () => {
+            statusSpan.innerText = "Disconnected";
+            statusSpan.style.color = "red";
+        });
+
+        // Input State
+        const inputs = { up: false, down: false, left: false, right: false };
+
+        // --- PC CONTROLS ---
+        document.addEventListener('keydown', (e) => handleKey(e.code, true));
+        document.addEventListener('keyup', (e) => handleKey(e.code, false));
+
+        function handleKey(code, state) {
+            switch(code) {
+                case 'KeyW': inputs.up = state; break;
+                case 'KeyS': inputs.down = state; break;
+                case 'KeyA': inputs.left = state; break;
+                case 'KeyD': inputs.right = state; break;
+            }
+            socket.emit('movement', inputs);
+        }
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (!myPlayer) return;
+            // Calculate angle logic for PC mouse click (simplified)
+            // On mobile we use the button
+            const rect = canvas.getBoundingClientRect();
+            // Scale mouse coordinates to canvas coordinates
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const mouseX = (e.clientX - rect.left) * scaleX;
+            const mouseY = (e.clientY - rect.top) * scaleY;
+            
+            const angle = Math.atan2(mouseY - myPlayer.y, mouseX - myPlayer.x);
+            socket.emit('shoot', angle);
+        });
+
+        // --- MOBILE CONTROLS ---
+        // Simple "Follow Finger" Logic
+        canvas.addEventListener('touchstart', handleTouch, {passive: false});
+        canvas.addEventListener('touchmove', handleTouch, {passive: false});
+        canvas.addEventListener('touchend', () => {
+            inputs.up = inputs.down = inputs.left = inputs.right = false;
+            socket.emit('movement', inputs);
+        });
+
+        function handleTouch(e) {
+            e.preventDefault(); // Stop scrolling
+            if (!myPlayer) return;
+
+            const rect = canvas.getBoundingClientRect();
+            const touch = e.touches[0];
+            
+            // Where is the touch relative to the center of the canvas visual?
+            // This is a rough estimation for movement direction
+            const touchX = touch.clientX - rect.left;
+            const touchY = touch.clientY - rect.top;
+            
+            // Center of the player on screen (Approximate center of canvas for relative movement)
+            const centerX = rect.width / 2;
+            const centerY = rect.height / 2;
+
+            inputs.right = touchX > centerX + 20;
+            inputs.left = touchX < centerX - 20;
+            inputs.down = touchY > centerY + 20;
+            inputs.up = touchY < centerY - 20;
+
+            socket.emit('movement', inputs);
+        }
+
+        // Mobile Shoot Button
+        shootBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            // Shoot in the direction the player is moving, or random if standing still
+            // For simplicity: Shoot straight up if standing, or towards movement
+            let angle = -Math.PI / 2; // Default Up
+            
+            if (inputs.right) angle = 0;
+            if (inputs.left) angle = Math.PI;
+            if (inputs.down) angle = Math.PI / 2;
+            
+            // Diagonals
+            if (inputs.right && inputs.down) angle = Math.PI / 4;
+            // ... etc (Simplified for mobile test)
+            
+            socket.emit('shoot', angle);
+        });
+
+        // --- RENDERING ---
+        socket.on('stateUpdate', (state) => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw Players
+            for (const id in state.players) {
+                const p = state.players[id];
+                
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 20, 0, Math.PI * 2);
+                
+                if (id === myPlayerId) {
+                    myPlayer = p;
+                    ctx.fillStyle = '#3498db'; // Blue (Me)
+                } else {
+                    ctx.fillStyle = '#e74c3c'; // Red (Enemy)
+                }
+                
+                ctx.fill();
+                
+                // Name/HP
+                ctx.fillStyle = 'white';
+                ctx.font = '14px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(`HP: ${p.hp}`, p.x, p.y - 30);
+            }
+
+            // Draw Projectiles
+            ctx.fillStyle = '#ffcc00';
+            state.projectiles.forEach((proj) => {
+                ctx.beginPath();
+                ctx.arc(proj.x, proj.y, 6, 0, Math.PI * 2);
+                ctx.fill();
+            });
+        });
+    </script>
 </body>
 </html>
