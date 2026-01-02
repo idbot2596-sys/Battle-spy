@@ -3,212 +3,198 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>2D Battle Royale</title>
+    <title>Big Map Battle</title>
     <style>
-        body {
-            background-color: #222;
-            color: white;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            margin: 0;
-            font-family: sans-serif;
-            overflow: hidden; /* Prevent scrolling on mobile */
-            touch-action: none; /* Disable double-tap zoom */
-        }
-        canvas {
-            background-color: #333;
-            border: 2px solid #555;
-            box-shadow: 0 0 20px black;
-            max-width: 100%;
-            max-height: 80vh;
-        }
-        #ui {
-            margin-bottom: 10px;
-            text-align: center;
-        }
-        #status {
-            font-weight: bold;
-            color: orange;
-        }
-        /* Mobile Shoot Button */
+        body { margin: 0; overflow: hidden; background: #111; font-family: sans-serif; touch-action: none; }
+        canvas { display: block; }
+        #ui { position: absolute; top: 10px; left: 10px; color: white; pointer-events: none; }
         #shootBtn {
-            margin-top: 15px;
-            padding: 15px 40px;
-            background-color: #e74c3c;
-            color: white;
-            border: none;
-            border-radius: 50px;
-            font-size: 20px;
-            font-weight: bold;
-            display: none; /* Hidden on PC, shown via JS if mobile */
+            position: absolute; bottom: 30px; right: 30px;
+            width: 80px; height: 80px; background: rgba(231, 76, 60, 0.5);
+            border-radius: 50%; border: 2px solid white; color: white; font-weight: bold;
+            display: none; user-select: none;
         }
-        #shootBtn:active {
-            background-color: #c0392b;
-        }
+        #shootBtn:active { background: rgba(231, 76, 60, 0.9); }
     </style>
 </head>
 <body>
     <div id="ui">
-        Status: <span id="status">Connecting...</span><br>
-        <small>Desktop: WASD to Move, Click to Shoot</small><br>
-        <small>Mobile: Touch & Drag to Move</small>
+        <div id="status">Connecting...</div>
+        <div>Scores: <span id="scoreBoard"></span></div>
     </div>
-    
-    <canvas id="gameCanvas" width="800" height="600"></canvas>
-    
-    <button id="shootBtn">SHOOT</button>
+    <div id="shootBtn">FIRE</div>
+    <canvas id="gameCanvas"></canvas>
 
-    <!-- Import Socket.io automatically served by the backend -->
     <script src="/socket.io/socket.io.js"></script>
-    
     <script>
         const socket = io();
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
-        const statusSpan = document.getElementById('status');
         const shootBtn = document.getElementById('shootBtn');
+        const statusDiv = document.getElementById('status');
+        const scoreDiv = document.getElementById('scoreBoard');
 
-        // Check if mobile
+        // Fullscreen Canvas
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // Mobile Check
         if (/Android|iPhone|iPad/i.test(navigator.userAgent)) {
-            shootBtn.style.display = 'block';
+            shootBtn.style.display = 'flex';
+            shootBtn.style.alignItems = 'center';
+            shootBtn.style.justifyContent = 'center';
         }
 
-        let myPlayerId = null;
-        let myPlayer = null;
+        // Game Data
+        let myId = null;
+        let map = { width: 1000, height: 1000, obstacles: [] };
+        let players = {};
+        let projectiles = [];
+        let inputs = { up: false, down: false, left: false, right: false };
 
-        // Connection Events
         socket.on('connect', () => {
-            statusSpan.innerText = "Connected!";
-            statusSpan.style.color = "lightgreen";
-            myPlayerId = socket.id;
+            statusDiv.innerText = "Connected! Waiting for map...";
+            myId = socket.id;
         });
 
-        socket.on('disconnect', () => {
-            statusSpan.innerText = "Disconnected";
-            statusSpan.style.color = "red";
+        socket.on('mapData', (data) => {
+            map = data;
+            statusDiv.innerText = "Playing";
         });
 
-        // Input State
-        const inputs = { up: false, down: false, left: false, right: false };
+        socket.on('stateUpdate', (state) => {
+            players = state.players;
+            projectiles = state.projectiles;
+            draw();
+            updateScoreboard();
+        });
 
-        // --- PC CONTROLS ---
-        document.addEventListener('keydown', (e) => handleKey(e.code, true));
-        document.addEventListener('keyup', (e) => handleKey(e.code, false));
-
-        function handleKey(code, state) {
-            switch(code) {
-                case 'KeyW': inputs.up = state; break;
-                case 'KeyS': inputs.down = state; break;
-                case 'KeyA': inputs.left = state; break;
-                case 'KeyD': inputs.right = state; break;
-            }
+        // --- INPUT HANDLING ---
+        // PC
+        window.addEventListener('keydown', e => setKey(e.code, true));
+        window.addEventListener('keyup', e => setKey(e.code, false));
+        function setKey(code, state) {
+            if (code === 'KeyW') inputs.up = state;
+            if (code === 'KeyS') inputs.down = state;
+            if (code === 'KeyA') inputs.left = state;
+            if (code === 'KeyD') inputs.right = state;
             socket.emit('movement', inputs);
         }
-
-        canvas.addEventListener('mousedown', (e) => {
-            if (!myPlayer) return;
-            // Calculate angle logic for PC mouse click (simplified)
-            // On mobile we use the button
-            const rect = canvas.getBoundingClientRect();
-            // Scale mouse coordinates to canvas coordinates
-            const scaleX = canvas.width / rect.width;
-            const scaleY = canvas.height / rect.height;
-            const mouseX = (e.clientX - rect.left) * scaleX;
-            const mouseY = (e.clientY - rect.top) * scaleY;
-            
-            const angle = Math.atan2(mouseY - myPlayer.y, mouseX - myPlayer.x);
-            socket.emit('shoot', angle);
-        });
-
-        // --- MOBILE CONTROLS ---
-        // Simple "Follow Finger" Logic
+        
+        // Mobile Joystick (Left side of screen)
         canvas.addEventListener('touchstart', handleTouch, {passive: false});
         canvas.addEventListener('touchmove', handleTouch, {passive: false});
         canvas.addEventListener('touchend', () => {
-            inputs.up = inputs.down = inputs.left = inputs.right = false;
+            inputs = { up: false, down: false, left: false, right: false };
             socket.emit('movement', inputs);
         });
 
         function handleTouch(e) {
-            e.preventDefault(); // Stop scrolling
-            if (!myPlayer) return;
-
-            const rect = canvas.getBoundingClientRect();
+            e.preventDefault();
             const touch = e.touches[0];
-            
-            // Where is the touch relative to the center of the canvas visual?
-            // This is a rough estimation for movement direction
-            const touchX = touch.clientX - rect.left;
-            const touchY = touch.clientY - rect.top;
-            
-            // Center of the player on screen (Approximate center of canvas for relative movement)
-            const centerX = rect.width / 2;
-            const centerY = rect.height / 2;
+            const w = window.innerWidth;
+            const h = window.innerHeight;
 
-            inputs.right = touchX > centerX + 20;
-            inputs.left = touchX < centerX - 20;
-            inputs.down = touchY > centerY + 20;
-            inputs.up = touchY < centerY - 20;
-
-            socket.emit('movement', inputs);
+            // Only care about touches on the left half for movement
+            if (touch.clientX < w / 2) {
+                inputs.up = touch.clientY < h / 2 - 50;
+                inputs.down = touch.clientY > h / 2 + 50;
+                inputs.left = touch.clientX < w / 4 - 50;
+                inputs.right = touch.clientX > w / 4 + 50;
+                socket.emit('movement', inputs);
+            }
         }
 
-        // Mobile Shoot Button
+        // Shooting
         shootBtn.addEventListener('touchstart', (e) => {
             e.preventDefault();
-            // Shoot in the direction the player is moving, or random if standing still
-            // For simplicity: Shoot straight up if standing, or towards movement
-            let angle = -Math.PI / 2; // Default Up
-            
-            if (inputs.right) angle = 0;
-            if (inputs.left) angle = Math.PI;
-            if (inputs.down) angle = Math.PI / 2;
-            
-            // Diagonals
-            if (inputs.right && inputs.down) angle = Math.PI / 4;
-            // ... etc (Simplified for mobile test)
-            
+            socket.emit('shoot', Math.random() * Math.PI * 2); // Random direction for now on mobile
+        });
+        
+        canvas.addEventListener('mousedown', (e) => {
+            if (!players[myId]) return;
+            const p = players[myId];
+            // Calculate real angle using Camera Offset
+            const camX = p.x - canvas.width / 2;
+            const camY = p.y - canvas.height / 2;
+            const mouseX = e.clientX + camX;
+            const mouseY = e.clientY + camY;
+            const angle = Math.atan2(mouseY - p.y, mouseX - p.x);
             socket.emit('shoot', angle);
         });
 
-        // --- RENDERING ---
-        socket.on('stateUpdate', (state) => {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // --- DRAWING SYSTEM (The Camera) ---
+        function draw() {
+            // 1. Clear Screen
+            ctx.fillStyle = '#111';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            // Draw Players
-            for (const id in state.players) {
-                const p = state.players[id];
-                
+            const me = players[myId];
+            if (!me) return; // Wait until we spawn
+
+            // 2. Calculate Camera Position
+            // We want 'me' to be in the middle of the screen
+            const camX = me.x - canvas.width / 2;
+            const camY = me.y - canvas.height / 2;
+
+            ctx.save();
+            ctx.translate(-camX, -camY); // Shift the whole world
+
+            // 3. Draw World Borders
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 5;
+            ctx.strokeRect(0, 0, map.width, map.height);
+
+            // 4. Draw Grid (Helps see movement)
+            ctx.strokeStyle = '#222';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            for (let x = 0; x <= map.width; x += 100) { ctx.moveTo(x, 0); ctx.lineTo(x, map.height); }
+            for (let y = 0; y <= map.height; y += 100) { ctx.moveTo(0, y); ctx.lineTo(map.width, y); }
+            ctx.stroke();
+
+            // 5. Draw Obstacles
+            ctx.fillStyle = '#2ecc71'; // Green Trees
+            map.obstacles.forEach(obs => {
+                ctx.beginPath();
+                ctx.arc(obs.x, obs.y, obs.r, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // 6. Draw Players
+            for (const id in players) {
+                const p = players[id];
                 ctx.beginPath();
                 ctx.arc(p.x, p.y, 20, 0, Math.PI * 2);
-                
-                if (id === myPlayerId) {
-                    myPlayer = p;
-                    ctx.fillStyle = '#3498db'; // Blue (Me)
-                } else {
-                    ctx.fillStyle = '#e74c3c'; // Red (Enemy)
-                }
-                
+                ctx.fillStyle = (id === myId) ? '#3498db' : '#e74c3c';
                 ctx.fill();
                 
-                // Name/HP
-                ctx.fillStyle = 'white';
-                ctx.font = '14px Arial';
-                ctx.textAlign = 'center';
-                ctx.fillText(`HP: ${p.hp}`, p.x, p.y - 30);
+                // Health Bar
+                ctx.fillStyle = 'red';
+                ctx.fillRect(p.x - 20, p.y - 35, 40, 5);
+                ctx.fillStyle = '#0f0';
+                ctx.fillRect(p.x - 20, p.y - 35, 40 * (p.hp / 100), 5);
             }
 
-            // Draw Projectiles
-            ctx.fillStyle = '#ffcc00';
-            state.projectiles.forEach((proj) => {
+            // 7. Draw Projectiles
+            ctx.fillStyle = '#f1c40f';
+            projectiles.forEach(proj => {
                 ctx.beginPath();
                 ctx.arc(proj.x, proj.y, 6, 0, Math.PI * 2);
                 ctx.fill();
             });
-        });
+
+            ctx.restore(); // Stop shifting
+        }
+
+        function updateScoreboard() {
+            if (!players[myId]) return;
+            scoreDiv.innerText = `Me: ${players[myId].score}`;
+        }
     </script>
 </body>
 </html>
